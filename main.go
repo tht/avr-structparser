@@ -28,6 +28,7 @@ func main() {
 
 	mqtt := os.Getenv("HUB_MQTT")
 	if mqtt == "" {
+		log.Println("Using fallback MQTT URI as environment 'HUB_MQTT' is not set.")
 		mqtt = "tcp://127.0.0.1:1883"
 	}
 	parserStatus := connectToHub("avr-structparser", mqtt, true)
@@ -36,8 +37,6 @@ func main() {
 	go nodeConfigListener("config/tht/avr-structparser/nodes/+")
 	go driverConfigListener("config/tht/avr-structparser/drivers/+")
 
-	// wait for configuration to arrive and start doing work afterwards
-	time.Sleep(5000 * time.Millisecond)
 	go logListener("logger/jeelink/+")
 
 	parserStatus <- 1
@@ -58,7 +57,7 @@ func connectToHub(clientName, port string, retain bool) chan<- interface{} {
 	options.AddBroker(port)
 	options.SetClientID(clientID)
 	options.SetKeepAlive(10)
-	options.SetBinaryWill("jet/"+clientID, nil, 1, retain)
+	options.SetBinaryWill(clientName+"/"+clientID, nil, 1, retain)
 	hub = mqtt.NewClient(options)
 
 	if t := hub.Connect(); t.Wait() && t.Error() != nil {
@@ -79,7 +78,7 @@ func connectToHub(clientName, port string, retain bool) chan<- interface{} {
 
 // topicWatcher turns an MQTT subscription into a channel feed of events.
 func topicWatcher(pattern string) <-chan event {
-	feed := make(chan event)
+	feed := make(chan event, 100)
 
 	t := hub.Subscribe(pattern, 0, func(hub *mqtt.Client, msg mqtt.Message) {
 		feed <- event{
@@ -155,47 +154,61 @@ func toBinData(slices [][]byte) []byte {
 
 /**
  * nodeConfigListener
- * Listens for log messages and parses received data.
+ * Listens for node configurations and updates internal data structure
  */
 func nodeConfigListener(feed string) {
 	for evt := range topicWatcher(feed) {
 
 		// Output received data
-		log.Printf("Receiving configuration for: %s", string(evt.Topic))
+		log.Printf("Receiving configuration: %s", string(evt.Topic))
 
 		// Extract nodeId
 		nodeId, _ := strconv.ParseUint(evt.Topic[strings.LastIndex(evt.Topic, "/")+1:], 10, 64)
 
-		var payload nodeInfo
-		if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-			log.Println("decode error:", err, evt)
-			return
+		if len(evt.Payload) < 4 {
+			// Payload empty, remove configuration
+			delete(nodes, uint(nodeId))
+
+		} else {
+			// Payload not empty. Parse JSON
+			var payload nodeInfo
+			if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+				log.Println("decode error:", err, evt)
+				return
+			}
+			log.Printf("Configuration received for node %d (%s) using '%s'", nodeId, payload.Location, payload.Driver)
+			nodes[uint(nodeId)] = payload
 		}
-		log.Printf("Decoded data for node %d: %v", nodeId, payload)
-		nodes[uint(nodeId)] = payload
 	}
 }
 
 /**
  * driverConfigListener
- * Listens for log messages and parses received data.
+ * Listens for driver configurations and updates internal data structure
  */
 func driverConfigListener(feed string) {
 	for evt := range topicWatcher(feed) {
 
 		// Output received data
-		log.Printf("Receiving configuration for: %s", string(evt.Topic))
+		log.Printf("Receiving configuration: %s", string(evt.Topic))
 
-		// Extract nodeId
+		// Extract driver name
 		driver := string(evt.Topic[strings.LastIndex(evt.Topic, "/")+1:])
 
-		var payload []fieldTemplate
-		if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-			log.Println("decode error:", err, evt)
-			return
+		if len(evt.Payload) < 4 {
+			// Payload empty, remove configuration
+			delete(drivers, driver)
+
+		} else {
+			// Payload not empty. Parse JSON
+			var payload []fieldTemplate
+			if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+				log.Println("decode error:", err, evt)
+				return
+			}
+			log.Printf("Decoded data for driver '%s' using %d fields", driver, len(payload))
+			drivers[driver] = payload
 		}
-		log.Printf("== Decoded data for driver '%s': %v", driver, payload)
-		drivers[driver] = payload
 	}
 }
 
@@ -204,7 +217,13 @@ func driverConfigListener(feed string) {
  * Listens for log messages and parses received data.
  */
 func logListener(feed string) {
-	for evt := range topicWatcher(feed) {
+	channel := topicWatcher(feed)
+
+	// wait for configuration to arrive and start doing work afterwards
+	time.Sleep(2000 * time.Millisecond)
+	log.Println("Done waiting for configuration, start handling REAL data...")
+
+	for evt := range channel {
 
 		// ignore line if it does not start with "OK"
 		if !bytes.HasPrefix(evt.Payload, []byte("OK ")) {
@@ -241,7 +260,7 @@ type fieldTemplate struct {
 	IgnoreUnless     string // ignore this field unless node has corresponding flag set
 }
 
-// Correlation between sketches (driver) and fields contained in struct
+// Correlation between sketches (driver) and fields contained in struct (data received on MQTT)
 var drivers = map[string][]fieldTemplate{
 /*
 	"roomnode.1": {
@@ -261,7 +280,7 @@ var drivers = map[string][]fieldTemplate{
 */
 }
 
-// Correlation between nodeIds and sketch running on it
+// Correlation between nodeIds and sketch running on it (data received on MQTT)
 type nodeInfo struct {
 	Driver, Location string
 	Flags            []string
