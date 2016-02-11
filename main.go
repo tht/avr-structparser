@@ -30,9 +30,10 @@ func main() {
 	defer hub.Disconnect(250)
 
 	go nodeConfigListener("config/tht/avr-structparser/nodes/+")
+	go driverConfigListener("config/tht/avr-structparser/drivers/+")
 
-	// Let the config some time to settle down and start the log-listener afterwards
-	time.Sleep(1000)
+	// wait for configuration to arrive and start doing work afterwards
+	time.Sleep(5000 * time.Millisecond)
 	go logListener("logger/jeelink/+")
 
 	parserStatus <- 1
@@ -173,6 +174,30 @@ func nodeConfigListener(feed string) {
 
 
 /**
+ * driverConfigListener
+ * Listens for log messages and parses received data.
+ */
+func driverConfigListener(feed string) {
+	for evt := range topicWatcher(feed) {
+
+		// Output received data
+		log.Printf("Receiving configuration for: %s", string(evt.Topic))
+
+		// Extract nodeId
+		driver := string(evt.Topic[strings.LastIndex(evt.Topic, "/")+1:])
+
+		var payload []fieldTemplate
+		if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+			log.Println("decode error:", err, evt)
+			return
+		}
+		log.Printf("== Decoded data for driver '%s': %v", driver, payload)
+		drivers[driver] = payload
+	}
+}
+
+
+/**
  * logListener
  * Listens for log messages and parses received data.
  */
@@ -205,17 +230,18 @@ func logListener(feed string) {
 
 // struct defining one single parsable data field
 type fieldTemplate struct {
-	size             uint8
-	fieldType, label string
-	multi            float32
-	round            int
-	unit             string
-	retain           bool
-	ignoreUnless     string // ignore this field unless node has corresponding flag set
+	Size             uint8
+	FieldType, Label string
+	Multi            float32
+	Round            int
+	Unit             string
+	Retain           bool
+	IgnoreUnless     string // ignore this field unless node has corresponding flag set
 }
 
 // Correlation between sketches (driver) and fields contained in struct
 var drivers = map[string][]fieldTemplate{
+/*
 	"roomnode.1": {
 		{8, "uint", "light", 1, -1, "", true, ""},
 		{1, "bool", "moved", 1, -1, "", true, "pir"},
@@ -230,6 +256,7 @@ var drivers = map[string][]fieldTemplate{
 		{1, "bool", "door2", 1, -1, "", true, "door2"},
 		{1, "bool", "door3", 1, -1, "", true, "door3"},
 	},
+*/
 }
 
 // Correlation between nodeIds and sketch running on it
@@ -265,19 +292,19 @@ func decode(origin uint, ts uint64, data []byte) {
 	var start uint = 0
 	for _, field := range pattern {
 		// Extracting bits for this specific field and rotate them once more while doing so
-		part := make([]byte, field.size)
-		for j := uint(0); j < uint(field.size); j++ {
-			part[j] = data[start+uint(field.size)-1-j]
+		part := make([]byte, field.Size)
+		for j := uint(0); j < uint(field.Size); j++ {
+			part[j] = data[start+uint(field.Size)-1-j]
 		}
 
 		// increment start-index for next field
-		start = start + uint(field.size)
+		start = start + uint(field.Size)
 
 		// handle ignoreUnless and check if flag is present
-		if field.ignoreUnless != "" {
+		if field.IgnoreUnless != "" {
 			skip := true
 			for _, flag := range node.Flags {
-				if flag == field.ignoreUnless {
+				if flag == field.IgnoreUnless {
 					skip = false
 				}
 			}
@@ -289,10 +316,10 @@ func decode(origin uint, ts uint64, data []byte) {
 		// prepare result for this item
 		result := map[string]interface{}{
 			"updated": ts,
-			"unit":    field.unit,
+			"unit":    field.Unit,
 		}
 
-		switch fieldType := field.fieldType; fieldType {
+		switch fieldType := field.FieldType; fieldType {
 		case "uint":
 			result["value"] = decodeUint(field, part)
 		case "int":
@@ -306,7 +333,7 @@ func decode(origin uint, ts uint64, data []byte) {
 		default:
 			log.Printf("Don't know how to handle '%s'", fieldType)
 		}
-		results[field.label] = result
+		results[field.Label] = result
 
 	}
 	log.Printf("%v", results)
@@ -314,7 +341,7 @@ func decode(origin uint, ts uint64, data []byte) {
 
 func decodeUint(field fieldTemplate, data []byte) uint {
 	value, _ := strconv.ParseInt(string(data), 2, 32)
-	log.Printf("-> Decoded '%s' (%s, %s) as: %d%s", string(data), field.label, field.fieldType, value, field.unit)
+	log.Printf("-> Decoded '%s' (%s, %s) as: %d%s", string(data), field.Label, field.FieldType, value, field.Unit)
 	return uint(value)
 }
 
@@ -322,34 +349,34 @@ func decodeInt(field fieldTemplate, data []byte) interface{} {
 	unsig_tmp, _ := strconv.ParseInt(string(data), 2, 32)
 
 	unsig := int(unsig_tmp)
-	mask := 1 << (field.size - 1)
+	mask := 1 << (field.Size - 1)
 	value := (unsig & ^mask) - (unsig & mask)
-	if field.multi != 1.0 {
-		floatValue := float64(field.multi) * float64(value)
-		shift := math.Pow(10, float64(field.round))
+	if field.Multi != 1.0 {
+		floatValue := float64(field.Multi) * float64(value)
+		shift := math.Pow(10, float64(field.Round))
 		floatValue = math.Floor((shift*floatValue)+0.5) / shift
 		log.Printf("-> Decoded '%s' (%s, %s) as: %s%s", string(data),
-			field.label, field.fieldType, strconv.FormatFloat(floatValue, 'f',
-				field.round, 64), field.unit)
+			field.Label, field.FieldType, strconv.FormatFloat(floatValue, 'f',
+				field.Round, 64), field.Unit)
 		return floatValue
 	} else {
-		log.Printf("-> Decoded '%s' (%s, %s) as: %d%s", string(data), field.label,
-			field.fieldType, value, field.unit)
+		log.Printf("-> Decoded '%s' (%s, %s) as: %d%s", string(data), field.Label,
+			field.FieldType, value, field.Unit)
 		return value
 	}
 }
 
 func decodeBool(field fieldTemplate, data []byte) bool {
 	value := (data[0] == 49)
-	log.Printf("-> Decoded '%s' (%s, %s) as: %t%s", string(data), field.label,
-		field.fieldType, value, field.unit)
+	log.Printf("-> Decoded '%s' (%s, %s) as: %t%s", string(data), field.Label,
+		field.FieldType, value, field.Unit)
 	return value
 }
 
 func decodeBatvolt(field fieldTemplate, data []byte) float64 {
 	intValue, _ := strconv.ParseInt(string(data), 2, 64)
 	value := float64(3.3/1024) * float64(intValue*4+100)
-	log.Printf("-> Decoded '%s' (%s, %s) as: %s%s", string(data), field.label,
-		field.fieldType, strconv.FormatFloat(value, 'f', 1, 64), field.unit)
+	log.Printf("-> Decoded '%s' (%s, %s) as: %s%s", string(data), field.Label,
+		field.FieldType, strconv.FormatFloat(value, 'f', 1, 64), field.Unit)
 	return value
 }
