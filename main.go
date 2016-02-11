@@ -242,8 +242,17 @@ func logListener(feed string) {
 		log.Printf("received data on %s from %d at time %d", string(evt.Topic), origin, ts)
 		log.Printf("=> parsing payload '%s'", string(evt.Payload))
 
+		// check if we need to ignore last part (signal level on my implementation)
+		tailSkip := 0
+		if slices[len(slices)-1][0] == '(' {
+			log.Println("Found (")
+			tailSkip = 1
+		} else {
+			log.Println("( not found")
+		}
+
 		// decode received data
-		bin := toBinData(slices[2 : len(slices)-1])
+		bin := toBinData(slices[2 : len(slices)-tailSkip])
 		log.Printf("=> %v", string(bin))
 		decode(uint(origin), ts, bin)
 	}
