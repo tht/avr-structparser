@@ -7,6 +7,7 @@ import (
 	mqtt "git.eclipse.org/gitroot/paho/org.eclipse.paho.mqtt.golang.git"
 	"log"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -25,8 +26,11 @@ type event struct {
 func main() {
 	log.Println("Connecting to MQTT... ")
 
-	parserStatus := connectToHub("avr-structparser", "tcp://192.168.42.15:1883", true)
-	//parserStatus := connectToHub("avr-structparser", "tcp://localhost:1883", true)
+	mqtt := os.Getenv("HUB_MQTT")
+	if mqtt == "" {
+		mqtt = "tcp://127.0.0.1:1883"
+	}
+	parserStatus := connectToHub("avr-structparser", mqtt, true)
 	defer hub.Disconnect(250)
 
 	go nodeConfigListener("config/tht/avr-structparser/nodes/+")
@@ -172,7 +176,6 @@ func nodeConfigListener(feed string) {
 	}
 }
 
-
 /**
  * driverConfigListener
  * Listens for log messages and parses received data.
@@ -195,7 +198,6 @@ func driverConfigListener(feed string) {
 		drivers[driver] = payload
 	}
 }
-
 
 /**
  * logListener
@@ -264,7 +266,8 @@ type nodeInfo struct {
 	Driver, Location string
 	Flags            []string
 }
-var nodes = map[uint]nodeInfo {
+
+var nodes = map[uint]nodeInfo{
 /*
 	5:  {"roomnode.1", "entrance", []string{"pir"}},
 	6:  {"doornode.1", "north", []string{"door1", "door2", "door3"}},
