@@ -245,10 +245,7 @@ func logListener(feed string) {
 		// check if we need to ignore last part (signal level on my implementation)
 		tailSkip := 0
 		if slices[len(slices)-1][0] == '(' {
-			log.Println("Found (")
 			tailSkip = 1
-		} else {
-			log.Println("( not found")
 		}
 
 		// decode received data
