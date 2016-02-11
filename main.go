@@ -29,6 +29,10 @@ func main() {
 	//parserStatus := connectToHub("avr-structparser", "tcp://localhost:1883", true)
 	defer hub.Disconnect(250)
 
+	go nodeConfigListener("config/tht/avr-structparser/nodes/+")
+
+	// Let the config some time to settle down and start the log-listener afterwards
+	time.Sleep(1000)
 	go logListener("logger/jeelink/+")
 
 	parserStatus <- 1
@@ -145,6 +149,30 @@ func toBinData(slices [][]byte) []byte {
 }
 
 /**
+ * nodeConfigListener
+ * Listens for log messages and parses received data.
+ */
+func nodeConfigListener(feed string) {
+	for evt := range topicWatcher(feed) {
+
+		// Output received data
+		log.Printf("Receiving configuration for: %s", string(evt.Topic))
+
+		// Extract nodeId
+		nodeId, _ := strconv.ParseUint(evt.Topic[strings.LastIndex(evt.Topic, "/")+1:], 10, 64)
+
+		var payload nodeInfo
+		if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+			log.Println("decode error:", err, evt)
+			return
+		}
+		log.Printf("Decoded data for node %d: %v", nodeId, payload)
+		nodes[uint(nodeId)] = payload
+	}
+}
+
+
+/**
  * logListener
  * Listens for log messages and parses received data.
  */
@@ -205,30 +233,33 @@ var drivers = map[string][]fieldTemplate{
 }
 
 // Correlation between nodeIds and sketch running on it
-var nodes = map[uint]struct {
-	driver, location string
-	flags            []string
-}{
+type nodeInfo struct {
+	Driver, Location string
+	Flags            []string
+}
+var nodes = map[uint]nodeInfo {
+/*
 	5:  {"roomnode.1", "entrance", []string{"pir"}},
 	6:  {"doornode.1", "north", []string{"door1", "door2", "door3"}},
 	7:  {"roomnode.1", "outside", []string{}},
 	25: {"roomnode.1", "office", []string{}},
 	26: {"roomnode.1", "shower", []string{}},
+*/
 }
 
 func decode(origin uint, ts uint64, data []byte) {
 	// locate configuration for node
 	node := nodes[origin]
-	if node.location == "" {
+	if node.Location == "" {
 		log.Printf("!! Node '%d' is not known, ignoring data", origin)
 		return
 	}
-	pattern := drivers[node.driver]
+	pattern := drivers[node.Driver]
 	if len(pattern) == 0 {
-		log.Printf("!! Node '%d' uses unknown driver '%s', ignoring data", origin, node.driver)
+		log.Printf("!! Node '%d' uses unknown driver '%s', ignoring data", origin, node.Driver)
 		return
 	}
-	log.Printf("=> Node %d (%s) is using driver %s", origin, node.location, node.driver)
+	log.Printf("=> Node %d (%s) is using driver %s", origin, node.Location, node.Driver)
 
 	results := make(map[string]interface{})
 	var start uint = 0
@@ -245,7 +276,7 @@ func decode(origin uint, ts uint64, data []byte) {
 		// handle ignoreUnless and check if flag is present
 		if field.ignoreUnless != "" {
 			skip := true
-			for _, flag := range node.flags {
+			for _, flag := range node.Flags {
 				if flag == field.ignoreUnless {
 					skip = false
 				}
