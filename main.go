@@ -141,10 +141,10 @@ func toBinData(slices [][]byte) []byte {
 
 		// Convert byte to binary represantation AND do MSB<>LSB conversation
 		for j := uint(0); j < 8; j++ {
-			if 0 != uint_onenumber&(1<<j) {
-				data[8*i+int(j)] = '1'
-			} else {
+			if 0 == uint_onenumber&(1<<j) {
 				data[8*i+int(j)] = '0'
+			} else {
+				data[8*i+int(j)] = '1'
 			}
 		}
 	}
@@ -163,21 +163,27 @@ func nodeConfigListener(feed string) {
 		log.Printf("Receiving configuration: %s", string(evt.Topic))
 
 		// Extract nodeId
-		nodeId, _ := strconv.ParseUint(evt.Topic[strings.LastIndex(evt.Topic, "/")+1:], 10, 64)
+		var nodeId uint
+		if number, err := strconv.ParseUint(evt.Topic[strings.LastIndex(evt.Topic, "/")+1:], 10, 64); err == nil {
+			nodeId = uint(number)
+		} else {
+			log.Println("Unable to parse nodeId from topic, plese check configuration")
+			continue
+		}
 
+		// Now check payload. If too short it CAN'T be a valid configuration - purge data from internal configuration
 		if len(evt.Payload) < 4 {
-			// Payload empty, remove configuration
-			delete(nodes, uint(nodeId))
+			delete(nodes, nodeId)
 
 		} else {
 			// Payload not empty. Parse JSON
 			var payload nodeInfo
 			if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-				log.Println("decode error:", err, evt)
+				log.Println("Error while trying to parse JSON", err)
 				return
 			}
 			log.Printf("Configuration received for node %d (%s) using '%s'", nodeId, payload.Location, payload.Driver)
-			nodes[uint(nodeId)] = payload
+			nodes[nodeId] = payload
 		}
 	}
 }
@@ -195,15 +201,15 @@ func driverConfigListener(feed string) {
 		// Extract driver name
 		driver := string(evt.Topic[strings.LastIndex(evt.Topic, "/")+1:])
 
+		// Now check payload. If too short it CAN'T be a valid configuration - purge data from internal configuration
 		if len(evt.Payload) < 4 {
-			// Payload empty, remove configuration
 			delete(drivers, driver)
 
 		} else {
 			// Payload not empty. Parse JSON
 			var payload []fieldTemplate
 			if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-				log.Println("decode error:", err, evt)
+				log.Println("Error while trying to parse JSON", err)
 				return
 			}
 			log.Printf("Decoded data for driver '%s' using %d fields", driver, len(payload))
@@ -243,6 +249,7 @@ func logListener(feed string) {
 		log.Printf("=> parsing payload '%s'", string(evt.Payload))
 
 		// check if we need to ignore last part (signal level on my implementation)
+		// TODO: Find a way to include this additional information in MQTT pub
 		tailSkip := 0
 		if slices[len(slices)-1][0] == '(' {
 			tailSkip = 1
@@ -267,7 +274,8 @@ type fieldTemplate struct {
 }
 
 // Correlation between sketches (driver) and fields contained in struct (data received on MQTT)
-var drivers = map[string][]fieldTemplate{
+var drivers = map[string][]fieldTemplate{}
+
 /*
 	"roomnode.1": {
 		{8, "uint", "light", 1, -1, "", true, ""},
@@ -284,7 +292,6 @@ var drivers = map[string][]fieldTemplate{
 		{1, "bool", "door3", 1, -1, "", true, "door3"},
 	},
 */
-}
 
 // Correlation between nodeIds and sketch running on it (data received on MQTT)
 type nodeInfo struct {
@@ -292,7 +299,8 @@ type nodeInfo struct {
 	Flags            []string
 }
 
-var nodes = map[uint]nodeInfo{
+var nodes = map[uint]nodeInfo{}
+
 /*
 	5:  {"roomnode.1", "entrance", []string{"pir"}},
 	6:  {"doornode.1", "north", []string{"door1", "door2", "door3"}},
@@ -300,18 +308,33 @@ var nodes = map[uint]nodeInfo{
 	25: {"roomnode.1", "office", []string{}},
 	26: {"roomnode.1", "shower", []string{}},
 */
-}
 
-func decode(origin uint, ts uint64, data []byte) {
-	// locate configuration for node
+/**
+ * identifyNode
+ * Returns nodeInfo and []fieldTemplate describing how to parse data for supplied nodeId.
+ * Will return an error if node is unknown.
+ */
+func identifyNode(origin uint) (nodeInfo, []fieldTemplate, error) {
 	node := nodes[origin]
 	if node.Location == "" {
-		log.Printf("!! Node '%d' is not known, ignoring data", origin)
-		return
+		return nodeInfo{}, nil, fmt.Errorf("Node '%d' is not known, ignoring data", origin)
 	}
 	pattern := drivers[node.Driver]
 	if len(pattern) == 0 {
-		log.Printf("!! Node '%d' uses unknown driver '%s', ignoring data", origin, node.Driver)
+		return nodeInfo{}, nil, fmt.Errorf("Node '%d' uses unknown driver '%s', ignoring data", origin, node.Driver)
+	}
+	return node, pattern, nil
+}
+
+/**
+ * decode
+ * Decodes data and publishes results to MQTT
+ */
+func decode(origin uint, ts uint64, data []byte) {
+	// locate configuration for node
+	node, pattern, err := identifyNode(origin)
+	if err != nil {
+		log.Println(err)
 		return
 	}
 	log.Printf("=> Node %d (%s) is using driver %s", origin, node.Location, node.Driver)
@@ -367,9 +390,12 @@ func decode(origin uint, ts uint64, data []byte) {
 	log.Printf("%v", results)
 }
 
-func decodeUint(field fieldTemplate, data []byte) interface{} {
-	value, _ := strconv.ParseInt(string(data), 2, 32)
-
+/**
+ * handleMultiplicator
+ * Applies "multi" and "round" to value if needed. This is applied to all integer
+ * types.
+ */
+func handleMultiplicator(field fieldTemplate, data []byte, value int) interface{} {
 	if field.Multi != 1.0 {
 		floatValue := float64(field.Multi) * float64(value)
 		shift := math.Pow(10, float64(field.Round))
@@ -385,27 +411,36 @@ func decodeUint(field fieldTemplate, data []byte) interface{} {
 	}
 }
 
+/**
+ * decodeUint
+ * Decodes an unsigned integer. It may return a int or float if there is a multiplicator
+ * on the field.
+ */
+func decodeUint(field fieldTemplate, data []byte) interface{} {
+	value, _ := strconv.ParseInt(string(data), 2, 32)
+
+	return handleMultiplicator(field, data, int(value))
+}
+
+/**
+ * decodeInt
+ * Decodes a signed integer. It may return a int or float if there is a multiplicator
+ * on the field.
+ */
 func decodeInt(field fieldTemplate, data []byte) interface{} {
 	unsig_tmp, _ := strconv.ParseInt(string(data), 2, 32)
 
 	unsig := int(unsig_tmp)
 	mask := 1 << (field.Size - 1)
 	value := (unsig & ^mask) - (unsig & mask)
-	if field.Multi != 1.0 {
-		floatValue := float64(field.Multi) * float64(value)
-		shift := math.Pow(10, float64(field.Round))
-		floatValue = math.Floor((shift*floatValue)+0.5) / shift
-		log.Printf("-> Decoded '%s' (%s, %s) as: %s%s", string(data),
-			field.Label, field.FieldType, strconv.FormatFloat(floatValue, 'f',
-				field.Round, 64), field.Unit)
-		return floatValue
-	} else {
-		log.Printf("-> Decoded '%s' (%s, %s) as: %d%s", string(data), field.Label,
-			field.FieldType, value, field.Unit)
-		return value
-	}
+
+	return handleMultiplicator(field, data, value)
 }
 
+/**
+ * decodeBool
+ * Decodes a boolean value, returns true or false
+ */
 func decodeBool(field fieldTemplate, data []byte) bool {
 	value := (data[0] == 49)
 	log.Printf("-> Decoded '%s' (%s, %s) as: %t%s", string(data), field.Label,
@@ -413,6 +448,11 @@ func decodeBool(field fieldTemplate, data []byte) bool {
 	return value
 }
 
+/**
+ * decodeBatvolt
+ * Decodes packed battery voltage. Use the following Arduino (C) code and set it as
+ * an uint8_t: bat = (analogRead(A5)-100)>>2;
+ */
 func decodeBatvolt(field fieldTemplate, data []byte) float64 {
 	intValue, _ := strconv.ParseInt(string(data), 2, 64)
 	value := float64(3.3/1024) * float64(intValue*4+100)
