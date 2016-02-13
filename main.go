@@ -367,10 +367,22 @@ func decode(origin uint, ts uint64, data []byte) {
 	log.Printf("%v", results)
 }
 
-func decodeUint(field fieldTemplate, data []byte) uint {
+func decodeUint(field fieldTemplate, data []byte) interface{} {
 	value, _ := strconv.ParseInt(string(data), 2, 32)
-	log.Printf("-> Decoded '%s' (%s, %s) as: %d%s", string(data), field.Label, field.FieldType, value, field.Unit)
-	return uint(value)
+
+	if field.Multi != 1.0 {
+		floatValue := float64(field.Multi) * float64(value)
+		shift := math.Pow(10, float64(field.Round))
+		floatValue = math.Floor((shift*floatValue)+0.5) / shift
+		log.Printf("=> Decoded '%s' (%s, %s) as: %s%s", string(data),
+			field.Label, field.FieldType, strconv.FormatFloat(floatValue, 'f',
+				field.Round, 64), field.Unit)
+		return floatValue
+	} else {
+		log.Printf("=> Decoded '%s' (%s, %s) as: %d%s", string(data), field.Label,
+			field.FieldType, value, field.Unit)
+		return value
+	}
 }
 
 func decodeInt(field fieldTemplate, data []byte) interface{} {
