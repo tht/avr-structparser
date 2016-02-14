@@ -456,6 +456,7 @@ func decodeBool(field fieldTemplate, data []byte) bool {
 func decodeBatvolt(field fieldTemplate, data []byte) float64 {
 	intValue, _ := strconv.ParseInt(string(data), 2, 64)
 	value := float64(3.3/1024) * float64(intValue*4+100)
+	value = math.Floor((100*value)+0.5) / 100
 	log.Printf("-> Decoded '%s' (%s, %s) as: %s%s", string(data), field.Label,
 		field.FieldType, strconv.FormatFloat(value, 'f', 1, 64), field.Unit)
 	return value
