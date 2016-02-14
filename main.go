@@ -258,7 +258,47 @@ func logListener(feed string) {
 		// decode received data
 		bin := toBinData(slices[2 : len(slices)-tailSkip])
 		log.Printf("=> %v", string(bin))
-		decode(uint(origin), ts, bin)
+		results := decode(uint(origin), ts, bin)
+		log.Printf("Received %d fields from decoder, publishing them now...", len(results))
+		publishResults(results)
+	}
+}
+
+/**
+ * publishResults
+ * Publishes all passed in values to MQTT
+ */
+func publishResults(results map[string]map[string]interface{}) {
+	for k, v := range results {
+		topicBase := "sensors/" + k + "/"
+
+		err := false
+		var result string
+		switch t := v["value"].(type) {
+		default:
+			log.Printf("Unexpected type %T in value for '%s'", t, k)
+			err = true
+		case bool:
+			result = strconv.FormatBool(t)
+		case int:
+			result = strconv.FormatInt(int64(t), 10)
+		case float64:
+			result = strconv.FormatFloat(t, 'f', -1, 64)
+		}
+		if err {
+			log.Printf("> Failed publishing to '%s' - data type unknown", topicBase)
+		} else {
+			log.Printf("> Publishing results to: '%s'", topicBase)
+			hub.Publish(topicBase+"value", 0, false, result)
+
+			updated, _ := v["updated"].(uint64)
+			hub.Publish(topicBase+"updated", 0, false, fmt.Sprintf("%d", updated))
+
+			unit, _ := v["unit"].(string)
+			if unit != "" {
+				hub.Publish(topicBase+"unit", 0, false, unit)
+			}
+		}
 	}
 }
 
@@ -330,16 +370,16 @@ func identifyNode(origin uint) (nodeInfo, []fieldTemplate, error) {
  * decode
  * Decodes data and publishes results to MQTT
  */
-func decode(origin uint, ts uint64, data []byte) {
+func decode(origin uint, ts uint64, data []byte) map[string]map[string]interface{} {
 	// locate configuration for node
 	node, pattern, err := identifyNode(origin)
 	if err != nil {
 		log.Println(err)
-		return
+		return nil
 	}
 	log.Printf("=> Node %d (%s) is using driver %s", origin, node.Location, node.Driver)
 
-	results := make(map[string]interface{})
+	results := make(map[string]map[string]interface{})
 	var start uint = 0
 	for _, field := range pattern {
 		// Extracting bits for this specific field and rotate them once more while doing so
@@ -387,7 +427,7 @@ func decode(origin uint, ts uint64, data []byte) {
 		results[field.Label] = result
 
 	}
-	log.Printf("%v", results)
+	return results
 }
 
 /**
@@ -443,7 +483,7 @@ func decodeInt(field fieldTemplate, data []byte) interface{} {
  */
 func decodeBool(field fieldTemplate, data []byte) bool {
 	value := (data[0] == 49)
-	log.Printf("-> Decoded '%s' (%s, %s) as: %t%s", string(data), field.Label,
+	log.Printf("=> Decoded '%s' (%s, %s) as: %t%s", string(data), field.Label,
 		field.FieldType, value, field.Unit)
 	return value
 }
@@ -457,7 +497,7 @@ func decodeBatvolt(field fieldTemplate, data []byte) float64 {
 	intValue, _ := strconv.ParseInt(string(data), 2, 64)
 	value := float64(3.3/1024) * float64(intValue*4+100)
 	value = math.Floor((100*value)+0.5) / 100
-	log.Printf("-> Decoded '%s' (%s, %s) as: %s%s", string(data), field.Label,
+	log.Printf("=> Decoded '%s' (%s, %s) as: %s%s", string(data), field.Label,
 		field.FieldType, strconv.FormatFloat(value, 'f', 1, 64), field.Unit)
 	return value
 }
