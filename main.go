@@ -258,9 +258,7 @@ func logListener(feed string) {
 		// decode received data
 		bin := toBinData(slices[2 : len(slices)-tailSkip])
 		log.Printf("=> %v", string(bin))
-		results := decode(uint(origin), ts, bin)
-		log.Printf("Received %d fields from decoder, publishing them now...", len(results))
-		publishResults(results)
+		decode(uint(origin), ts, bin)
 	}
 }
 
@@ -268,9 +266,9 @@ func logListener(feed string) {
  * publishResults
  * Publishes all passed in values to MQTT
  */
-func publishResults(results map[string]map[string]interface{}) {
+func publishResults(location string, results map[string]map[string]interface{}) {
 	for k, v := range results {
-		topicBase := "sensors/" + k + "/"
+		topicBase := "sensors/" + location + "/" + k + "/"
 
 		err := false
 		var result string
@@ -370,12 +368,12 @@ func identifyNode(origin uint) (nodeInfo, []fieldTemplate, error) {
  * decode
  * Decodes data and publishes results to MQTT
  */
-func decode(origin uint, ts uint64, data []byte) map[string]map[string]interface{} {
+func decode(origin uint, ts uint64, data []byte) {
 	// locate configuration for node
 	node, pattern, err := identifyNode(origin)
 	if err != nil {
 		log.Println(err)
-		return nil
+		return
 	}
 	log.Printf("=> Node %d (%s) is using driver %s", origin, node.Location, node.Driver)
 
@@ -427,7 +425,7 @@ func decode(origin uint, ts uint64, data []byte) map[string]map[string]interface
 		results[field.Label] = result
 
 	}
-	return results
+	publishResults(node.Location, results)
 }
 
 /**
