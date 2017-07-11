@@ -2,9 +2,11 @@
 MQTT based parser for decoding received JeeNode data into corresponding values. All configuration is received from MQTT topics.
 
 ## Current state
-The current version should work and happily decode signed and unsigned integers and bool values from the received data. The resulting values are logged to console but not yet published to MQTT.
+The current version should work and happily decode signed and unsigned integers and bool values from the received data. The resulting values are logged to console and published to MQTT.
 
 It probably needs some minor modifications to acceppt *standard* JeeNode log messages as the messages at my place do have an additional field showing the signal level during reception.
+
+Use `jet pub packs/avr-structparser '["avr-structparser"]'` to register this module as a *pack*.
 
 
 ## Principle of Operation
@@ -60,4 +62,4 @@ Order, size and datatype have to match for the decoding to succeed. *label* is u
 
 I highly recommend to use `jet pub -r …` to permanently push the configuration to MQTT. `avr-structparser` does not store the configuration when shut down so it has to be able to receive a complete set of configuration from MQTT while starting up.
 
-As soon as all the values are extracted they are published to MQTT (not yet implemented!).
+As soon as all the values are extracted they are published to MQTT.
